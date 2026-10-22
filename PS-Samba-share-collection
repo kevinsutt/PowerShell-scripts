@@ -1,0 +1,71 @@
+# dependencies - 7zip4powershell
+
+# Samba share loetelu
+$sharelist = @(
+    '\\IP\FOLDER',
+    '\\IP\FOLDER'
+    )
+
+## salvestamis asukoht
+$destination = 'X:\FOLDER'
+
+## teeme vastava samba share copy paste'imise ära lokaalsesse masinasse
+## paroolid on hoitud Credential Manager'is
+
+## ühendame lahti kõik Samba kettad, et vältida tähtede probleemi
+   Get-SmbMapping | Remove-SmbMapping -Force -ErrorAction SilentlyContinue
+   Remove-PSDrive -Name Z -Force -ErrorAction SilentlyContinue
+
+foreach ($share in $sharelist) {
+   
+   # loome kausta, kuhu sisse panna backup/error log koos time stampiga
+   
+   $timestamp = Get-Date -Format 'yyyy-MM-dd_HH-mm-ss'
+   
+   $ajaga_share = "${share}_$timestamp"
+   
+   $full_path = Join-Path -Path $destination -ChildPath $ajaga_share
+   
+   New-Item -Path $full_path -ItemType Directory -Force
+   
+   ## loome samba ühenduse, edukas == backup, fail == create log file
+   try {
+       New-PSDrive -Name "Z" -PSProvider FileSystem -Root $share -Persist -ErrorAction Stop
+        
+       robocopy "Z:\" $full_path /E /MT:32 /R:3 /W:5 /NFL /NDL /NP /J
+
+        # kui väärtus üle 7, siis catchi läheb
+        if ($LASTEXITCODE -gt 7) { throw "Robocopy failed with exit code $LASTEXITCODE" }
+       
+       # zip-ime backupi serveri volüümi säästmiseks 7-zip abil
+       
+       $compressed = "${full_path}.zip" ## compressitud faili täis nimi 
+
+       Compress-7Zip -ArchiveFileName $compressed -Path $full_path -CompressionLevel High ## compressime
+
+       # kustutame ära compressimata kaust, et säästa volüümi serveril
+
+       Remove-Item -Recurse -Force $full_path
+
+       ## ühendame lahti samba share-i, muidu Z tähis hakkab segama
+       Remove-PSDrive -Name Z -Force -ErrorAction SilentlyContinue
+   }
+   catch {
+   ## failib, siis log fail teha ja sinna panna error logi
+   $time = Get-Date -Format 'yyyy-MM-dd_HH-mm-ss'
+   
+   $share_sanitized = ($share -replace '^\\\\','') -replace '\\','_' ## et ei tekiks topelt IP aadressi kaust
+
+   $errorfile = "${share_sanitized}_${time}_ERROR.txt" # error logi faili nimi
+   
+   $error_log_location = Join-Path -Path $full_path -ChildPath $errorfile
+   
+   New-Item -Path "${full_path}\$errorfile" -ItemType "File" -Force ## loome error log faili
+   $_ | Out-String | Add-Content -Path $error_log_location ## saata error info konsoolist logi faili
+   
+   Remove-PSDrive -Name Z -Force -ErrorAction SilentlyContinue ## eemaldame lahti ka samba share
+   }
+
+}
+
+## lõpp
